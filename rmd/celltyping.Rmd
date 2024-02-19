@@ -1,10 +1,10 @@
 ---
-title: "Single Cell RNA-seq Cell Typing Tutorial (Adapted and Expanded from Seurat)"
-author: "Christine Yiwen Yeh"
+title: "Single Cell RNA-seq Cell Typing Tutorial "
+author: "Christine Yiwen Yeh (Adapted and Expanded from Seurat)"
 date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
 output: rmarkdown::html_document
 vignette: >
-  %\VignetteIndexEntry{Bulk RNA-Sequencing REMI Tutorial}
+  %\VignetteIndexEntry{scRNA-seq Clustering Tutorial}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -15,13 +15,20 @@ knitr::opts_chunk$set(echo = TRUE)
 
 For this tutorial, we will be analyzing subsampled lung adenocarcinoma single cell RNA-seq (scRNA-seq) data. 
 
+First, we load packages. For this tutorial, it is assumed that you have the following packages already installed: 
+
+```{r packages, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr, quietly = T)
+library(Seurat, quietly = T)
+library(ggplot2, quietly = T)
+library(patchwork, quietly = T)
+```
+
 # Loading scRNA-seq Data 
 
 We start by loading the scRNA-seq dataset and walking through how one would theoretically cluster these data to annotate cell types. The `readRDS()` function reads compressed RObjects and loads them into your computing environment in R. The `scRNA*_.rds` files in `/path/to/tutorial/directory/data/` contains the publicly available scRNA-seq dataset [from this paper](https://www.nature.com/articles/s41591-019-0750-6). I have already "pre-processed" the data so that it is in the neat form of (1) a counts matrix, and (2) meta data frame. As you can see, the authors had already annotated the cell types in the meta data that I have included!
 
 ```{r init, message=FALSE, warning=FALSE}
-library(dplyr, quietly = T)
-
 # Load the lung adenocarcinoma scRNA-seq dataset
 counts <- readRDS("../data/scRNA_laughney2020_counts.rds")
 meta <- readRDS("../data/scRNA_laughney2020_meta.rds")
@@ -41,8 +48,6 @@ We next use the loaded count matrix and some meta data to create a `Seurat` obje
 # Setup a scRNA-seq Seurat Object
 
 ```{r seurat}
-library(Seurat, quietly = T)
-
 # Load Data into a SeuratObject 
 scRNA_so <- CreateSeuratObject(counts = counts, 
                                meta.data = meta)
@@ -53,17 +58,11 @@ scRNA_so
 
 The steps below encompass the standard pre-processing workflow for scRNA-seq data in Seurat. These represent the selection and filtration of cells based on QC metrics, data normalization and scaling, and the detection of highly variable features.
 
-## QC and selecting cells for further analysis
+### QC and selecting cells for further analysis
 
 Seurat allows you to easily explore QC metrics and filter cells based on any user-defined criteria. A few QC metrics [commonly used](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4758103/) by the community include: 
-* The number of unique genes detected in each cell. 
-+ Low-quality cells or empty droplets will often have very few genes
-+ Cell doublets or multiplets may exhibit an aberrantly high gene count
-* Similarly, the total number of molecules detected within a cell (correlates strongly with unique genes)
-* The percentage of reads that map to the mitochondrial genome
-+ Low-quality / dying cells often exhibit extensive mitochondrial contamination
-+ We calculate mitochondrial QC metrics with the `PercentageFeatureSet()` function, which calculates the percentage of counts originating from a set of features
-+ We use the set of all genes starting with `MT-` as a set of mitochondrial genes
+(1) The number of unique genes detected in each cell (low-quality cells or empty droplets will often have very few genes, or cell doublets or multiplets may exhibit an aberrantly high gene count). 
+(2) The percentage of reads that map to the mitochondrial genome (Low-quality / dying cells often exhibit extensive mitochondrial contamination) 
 
 In this example, we do not filter based on the above since the authors of this study had already done so before releasing their data! 
 
@@ -79,13 +78,13 @@ scRNA_so <- NormalizeData(scRNA_so,
 
 While this method of normalization is standard and widely used in scRNA-seq analysis, there are many that have researched how certain datasets or downstream analyses can be thrown off by the major assumptions of each normalization protocol. For users who are interested here is a [paper](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-021-02584-9) from the folks at Seurat that describe their alternative to the standard normalization. 
 
-# Identification of highly variable features (feature selection)
+### Identification of highly variable features (feature selection)
 
 We next calculate a subset of features that exhibit high cell-to-cell variation in the dataset (i.e, they are highly expressed in some cells, and lowly expressed in others). For RNA-seq [some folks](https://www.nature.com/articles/nmeth.2645) have found that focusing on these genes in downstream analysis helps to highlight biological signal in single-cell datasets.
 
 By default, Seurat returns 2,000 features per dataset. These will be used in the downstream analyses: 
 
-```{r var_features, fig.height=4, fig.width=9}
+```{r var_features, fig.height=4, fig.width=8}
 # Find variable features
 scRNA_so <- FindVariableFeatures(scRNA_so, 
                              selection.method = 'vst', 
@@ -97,11 +96,11 @@ top10 <- head(VariableFeatures(scRNA_so), 10)
 # plot variable features with and without labels
 plot1 <- VariableFeaturePlot(scRNA_so)
 plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
-plot1 + plot2
+plot2
 ```
 ***
 
-# Scaling the data
+### Scaling the data
 
 Next, we apply a linear transformation ('scaling') that is a standard pre-processing step prior to dimensional reduction techniques like PCA. The `ScaleData()` function:
 
@@ -151,11 +150,7 @@ scRNA_so <- RunTSNE(scRNA_so, dims = 1:50, verbose = F)
 ```
 
 2D visualization techniques like tSNE and UMAP can be valuable tools for exploring datasets, however all visualization techniques have limitations, and cannot fully represent the complexity of the underlying data. In particular, these methods aim to preserve local distances in the dataset (i.e. ensuring that cells with very similar gene expression profiles co-localize), but often do not preserve more global relationships. We encourage folks to leverage techniques like UMAP for visualization, but to avoid drawing biological conclusions solely on the basis of visualization techniques. 
-```{r tsne_plot, fig.height=4, fig.width=5}
-# note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters
-library(ggplot2)
-library(patchwork)
-getwd()
+```{r tsne_plot, fig.height=6, fig.width=6}
 colors <- readRDS("../data/colorBlind.rds")
 DimPlot(scRNA_so, 
         group.by=c("seurat_clusters"), 
@@ -167,8 +162,7 @@ DimPlot(scRNA_so,
 
 Because this dataset came with cell type annotations from the authors, we can see how well those cell types line up with the clusters: 
 
-```{r umapplot, fig.height=3, fig.width=8}
-# note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters
+```{r umapplot, fig.height=6, fig.width=12}
 colors <- readRDS("../data/colorBlind.rds")
 a = DimPlot(scRNA_so, 
             pt.size = 0.1,
@@ -185,7 +179,7 @@ print(a + b)
 
 However, in the event that your dataset isn't a published dataset, e.g. it's fresh off of sequencing from your own beloved samples, you would need to go the extra step to label these clusters. 
 
-## Finding differentially expressed features (cluster biomarkers)
+### Finding differentially expressed features
 
 Seurat can help you find markers that define clusters via differential expression (DE) analysis.`FindMarkers()` identifies positive and negative markers of a single cluster, compared to all other cells.  `FindAllMarkers()` automates this process for all clusters. Seurat also offers different underlying DE analysis algorithms and implementations and you can read their documentation to explore the different options. 
 
@@ -196,7 +190,7 @@ scRNA_de_novo_markers <- FindMarkers(scRNA_so,
                                      ident.1=1)
 ```
 
-# Assigning cell type identity to clusters manually
+### Assigning cell type identity to clusters manually
 
 If you have biological knowledge of the markers of all the cell types in your sample, you can use that knowledge to manually assign the clusters based on the "de novo" cell type markers. For example, if you look at cluster 1's top markers based on the analysis we performed above, you might guess that this is likely a T cell cluster!
 

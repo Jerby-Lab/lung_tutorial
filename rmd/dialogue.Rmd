@@ -1,0 +1,212 @@
+---
+title: "DIALOGUE tutorial for deriving multi-cellular programs"
+author: "Christine Yiwen Yeh"
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+output: rmarkdown::html_document
+vignette: >
+  %\VignetteIndexEntry{DIALOGUE Tutorial}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+For this tutorial, we will be analyzing one lung adenocarcinoma sample profiled using single-cell resolution spatial transcriptomics (ST)! It is assumed that you have already installed the necessary R packages before running this tutorial. To install DIALOGUE, please see the [Github Page Here](https://github.com/livnatje/DIALOGUE). 
+
+```{r packages, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(DIALOGUE, quietly = T)
+library(irlba, quietly = T)
+library(ggplot2, quietly = T)
+library(patchwork, quietly = T)
+library(dplyr, quietly = T)
+library(tidyr, quietly = T)
+library(psych, quietly = T)
+```
+
+# Loading ST data
+
+We start by loading the the spatial transcriptomics data. Once again, the `readRDS()` function reads compressed RObjects and loads them into your computing environment in R. The `ST_he2022_luad13.rds` file in `/path/to/tutorial/directory/data/` contains one lung adenocarcinoma sample from the the publicly available ST dataset [from this paper](https://www.nature.com/articles/s41587-022-01483-z). We are providing "pre-annotated" data which includes (1) raw counts matrix (`cd`) (2) gene expression matrix (`tpm`) and (3) cell type annotations (`cell.types`) and other cell-level meta data, (4) cell coordinates (`coord`) and other spatial features. 
+
+```{r init, message=FALSE, warning=FALSE}
+
+# read in the data which includes components stored as a list
+ST_data <- readRDS("../data/ST_he2022_luad13.rds")
+
+# load colors for plotting
+colors <- readRDS("../data/colorBlind.rds")
+
+# look at the components of the data! 
+names(ST_data)
+
+# the gene expression matrix is a 960 x 81236 matrix with 960 genes and 81236 cells.
+dim(ST_data$tpm)
+```
+
+Before we dive into the multi-cellular programs, first let us explore/visualize the data by using the cell type annotations and cell coordinates. You can see that although the colors are different, this sample matches the samples show in the right most column of Figure 3b in [the DIALOGUE paper](https://www.nature.com/articles/s41587-022-01288-0).
+
+```{r plot_celltypes, fig.height=6, fig.width=10}
+# make data frame for plotting 
+plt_df = data.frame(cell.types = ST_data$cell.types, ST_data$coor)
+
+# make and format plot
+p = ggplot(plt_df, aes(x = X, y = Y, col = cell.types)) + 
+  geom_point(size = 0.1) +
+  scale_color_manual(values = c(colors[-15], "grey", "darkgreen")) + 
+  theme_bw() + 
+  coord_fixed() + 
+  guides(color = guide_legend(override.aes = list(size = 3), ncol = 2))
+
+#print
+print(p)
+```
+The way DIALOGUE formulates spatial "niches" in the tissue is by dividing the 2D space into grids. The size of your niches is a hyperparameter you can tune depending on the physical scale of the user's hypothesized multicellular programs. This information is stored in the `spatial_frames` component of `ST_data` object. Below we plot the cells according to their niche ID. 
+
+```{r plot_frames, fig.height=6, fig.width=10}
+# make data frame for plotting 
+plt_df = data.frame(spatial_frames = factor(ST_data$spatial_frames), ST_data$coor)
+frame_colors = rep(colors, round(length(unique(ST_data$spatial_frames))/length(colors)))
+
+# make and format plot
+p = ggplot(plt_df, aes(x = X, y = Y, col = spatial_frames)) + 
+  geom_point(size = 0.1) +
+  theme_bw() + 
+  coord_fixed() + 
+  scale_color_manual(values = frame_colors) +
+  theme(legend.position = "none")
+
+#print
+print(p)
+```
+
+# Setting up "Cell Type Objects" 
+
+One way that we can describe the DIALOGUE framework, is that the algorithm considers each cell type's single cell profiles as one "perspective" in the tissue. We then use DIALOGUE to find out how  Therefore, as input, DIALOGUE takes in a representation of each of the cell type's single cell profiles e.g. gene expression (but can be any type of data). It is recommended to provide a more compact representation of the gene expression; for example, below we use the top 30 Principle Components (PCs) based on the PCA of each cell type (stored as the object `X` for each cell type). 
+
+In this analysis, we want to discover how stromal cells (fibroblasts), macrophages, and CD4 T cells coordinate gene programs together in the tumor microenvironment. Therefore, we make a "Cell Type Object" for each of these 3 cell type to prepare for DIALOGUE analysis.
+
+```{r make_cell_types}
+# function for running PCA and extracting PCs
+get_pcs <- function(X, dims = 30){
+  X_colmeans <- colMeans(x = X)
+  irlba_out <- irlba(A = X, nv = dims, center = X_colmeans)
+  X_top_pcs <- irlba_out$u %*% diag(x = irlba_out$d, nrow = dims)
+  row.names(X_top_pcs) <- row.names(X)
+  colnames(X_top_pcs) <- paste0("PC_", 1:dims)
+  return(X_top_pcs)
+}
+
+# using DIALOGUE's "make.cell.types" function to make 3 cell type objects corresponding 
+# to fibroblasts, macrophages, and CD4+ T cells. 
+cell.type.objects <- lapply(c("fibroblast", "macrophage", "T.CD4"), function(cell.type.name){
+  
+  # subset out data for one cell type 
+  b <- ST_data$cell.types == cell.type.name # cell type boolean 
+  cell_tpm <- ST_data$tpm[,b] # getting cell type gene expression 
+  samples <- ST_data$spatial_frames[b] # getting cell type specific spatial frames
+  names(samples) <- ST_data$cells[b]
+  cellQ <- ST_data$comp.reads[b]  # getting cell quality metrix (total reads per cell)
+  metadata = data.frame(ST_data[c("comp.reads", "cell.types")])[b,]
+  
+  # compute the top PCs for selected cell type
+  pcs <- get_pcs(t(cell_tpm), dims = 30)
+  
+  # make the cell type object for selected cell type 
+  celltypeobj <- make.cell.type(
+    name = cell.type.name, # the name of the cell type
+    tpm = cell_tpm, # gene expression of only cells of selected cell type
+    samples = samples, # the spatial frames 
+    X = pcs, # top PCs of the cell type expression matrix
+    metadata = metadata, # field for additional meta data
+    cellQ = cellQ, # loading cellQ
+  )
+})
+```
+
+# Running DIALOGUE
+  
+Once you have set up the DIALOGUE cell type objects, the API of DIALOGUE wraps everything all together in one function and automatically generates results and plots.
+
+```{r dialogue, eval=FALSE, message=FALSE, warning=FALSE, include=TRUE}
+# set up DIALOGUE parameters
+param <- DLG.get.param(k = 3, # number of latent dimensions to use
+                results.dir = "../results/dialogue/", # directory to save the results
+                extra.sparse = F, # control sparsity of run
+                covar = "cellQ", # confounder 
+                conf = "cellQ", # cell type confidence
+                spatial.flag = T, # spatial or not-spatial
+                pheno = NULL) # meta data fields to test
+
+# run DIALOGUE
+DIALOGUE.run(rA = cell.type.objects, # cell type objects from previous chunks
+                main = "ST_LUAD13", # run name
+                param)
+```
+
+# Analyzing DIALOGUE outputs
+
+Once the DIALOGUE run has completed, you can look in the results folder specified above (which for this tutorial is: `../results/dialogue/`), you will find the outputs of DIALOGUE as either figures (`*.pdf` files) or `*.rds` files. 
+
+### Analyzing MCP scores 
+
+Let's take a look at the `DLG.output_ST_LUAD13.rds` file and breakdown what sort of information we have! First let's take a look at the `scores` compartment which gives the MCPs' (multicellular program's) expression scores in each cell. We can first check that these MCPs are truly correlated across the spatial niches between each of the three cell types, as we've done so here for MCP1.   
+
+```{r corr, fig.height=6, fig.width=6}
+# read in results
+rslts <- readRDS("../results/dialogue/DLG.output_ST_LUAD13.rds")
+
+# make plotting data frame that summarizes the scores for each spatial niche
+df <- do.call("rbind.data.frame", rslts$scores)
+df <- df %>% group_by(samples, cell.types) %>% 
+  summarize(MCP1 = mean(MCP1)) %>%
+  spread(cell.types, MCP1)
+
+# plot the pairs plots, *** denotes statistical significance with p.value < 10e-3
+pairs.panels(df[,-1], hist.col = "grey",breaks = 50,ellipses = F,
+                 smooth = F,lm = T,stars = T,method = "pearson")
+```
+
+We can also plot each cell's score in situ to visualize how the cells' MCPs expression are spatially correlated. You can see below that the scores are high when all three cell types are co-localized! 
+
+```{r mcp_spatial, fig.height=6, fig.width=8}
+# merge the coordinates with the MCP scores
+df <- do.call("rbind.data.frame", rslts$scores)
+row.names(ST_data$coor) <- ST_data$cells
+df <- data.frame(df, ST_data$coor[df$cells,])
+df$MCP1 <- -df$MCP1
+
+# plot cell types in situ
+a <- ggplot(df, aes(x = X, y = Y, col = cell.types)) + 
+  geom_point(size = 0.1) + 
+  scale_color_manual(values = c(colors[4:5], "grey")) +
+  coord_fixed() + 
+  theme_bw() +
+  guides(color = guide_legend(override.aes = list(size = 3)))
+
+# plot mcp expression in situ
+b <- ggplot(df, aes(x = X, y = Y, col = MCP1)) + 
+  geom_point(size = 0.1) + 
+  scale_color_gradient2(low = '#009392', 
+                        mid = '#f6edbd', 
+                        high = '#A01C00') + 
+  coord_fixed() + 
+  theme_bw()
+
+a
+b
+```
+
+### Analyzing Genes in Each Multicellular Program 
+
+Now, let's look at which genes make up the discovered multicellular programs (MCPs). Below we look at the genes in `MCP1`. Looking at these data, we might interpret that _*IL1*_ signaling may play a role in coordinating this multicellular program, given the coordinated induction of _*IL1B*_ in macrophages, its receptor _*IL1R1*_ in fibroblasts and its agonist _*IL1RN*_ in macrophages.
+
+```{r mcp_genes}
+# let's extract out mcp1 (multicellular program 1)
+mcp1 <- rslts$MCPs$MCP1
+
+# looking at the down component
+mcp1[grepl("down",names(mcp1))]
+```
+
+And...that's it for now!
